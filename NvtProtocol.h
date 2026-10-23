@@ -124,4 +124,26 @@ int nvt_peek_frame_header(struct nvt_chip *c, uint8_t *hdr);   // hdr: NVT_THP_P
 int nvt_peek_valid(const uint8_t *hdr);
 unsigned nvt_peek_counter(const uint8_t *hdr);
 unsigned nvt_peek_type(const uint8_t *hdr);
+
+// Point reports: firmware that reports fingers itself instead of THP frames (the NT36532 of the Xiaomi Pad 6, pipa). Facts from
+// that tablet's stock kernel (nvt_ts_work_func, nvt_ts_point_data_checksum): 65 bytes from the event buffer's offset 0, ten slots
+// of six bytes, the pressure high bytes of the first two slots at 62/63 and in byte 64 the two's complement of the sum of bytes
+// 0..63. A slot: id in bits 7:3 of byte 0 (1..10, 0 = empty) and the state in bits 2:0 (1 down, 2 moving); x = b1<<4 | b3>>4,
+// y = b2<<4 | (b3 & 15) in the firmware's coordinate range (nvt_fw_info abs_x_max/abs_y_max); b4 the width, b5 the pressure.
+// Byte 0 = 0xfd/0xfe/... marks a firmware reset or watchdog recovery instead of points (nvt_wdt_fw_recovery).
+#define NVT_POINT_DATA_LEN 65
+#define NVT_POINT_SLOTS 10
+#define NVT_RESET_STATE_REK 0xa1
+struct nvt_point {uint8_t id, state; uint16_t x, y; uint8_t width; uint16_t pressure;};
+int nvt_read_points(struct nvt_chip *c, uint8_t *data);          // NVT_POINT_DATA_LEN bytes
+int nvt_points_checksum_ok(const uint8_t *data);
+int nvt_points_recovery(const uint8_t *data);                     // nonzero: the firmware reset or recovered, not a point report
+// Fingers down or moving, in slot order, within the firmware's range; returns how many were written to out (at most max).
+unsigned nvt_parse_points(const uint8_t *data, const struct nvt_fw_info *info, struct nvt_point *out, unsigned max);
+// The reset state (event buffer 0x60) reaching at least `state` within `polls` polls of 10 ms.
+int nvt_wait_reset_state(struct nvt_chip *c, uint8_t state, unsigned polls);
+// After nvt_download_firmware, for point-report firmware: as the stock flow, wait for the reset state to reach REK (the baseline
+// re-calibration has started), then read the firmware info (coordinate range). A missing state or a bad info block is reported
+// (NVT_ERR_TIMEOUT / NVT_ERR_FW) with info still filled as far as it was read.
+int nvt_start_reports(struct nvt_chip *c, struct nvt_fw_info *info);
 #endif

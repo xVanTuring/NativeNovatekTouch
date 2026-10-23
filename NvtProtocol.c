@@ -364,3 +364,54 @@ int nvt_peek_frame_header(struct nvt_chip *c, uint8_t *hdr) {
     // frame[i] = chip byte i-1 (see nvt_read_frame), so frame[NVT_THP_HEADER_LEN] is chip byte NVT_THP_HEADER_LEN-1.
     return nvt_read(c,c->map->event_buf+NVT_THP_HEADER_LEN-1,hdr,NVT_THP_PEEK_LEN);
 }
+
+int nvt_read_points(struct nvt_chip *c, uint8_t *data) {
+    // The stock CTP_SPI_READ of point_data at offset 0 of the event buffer's page (its index 0 is the address byte).
+    return nvt_read(c,c->map->event_buf,data,NVT_POINT_DATA_LEN);
+}
+int nvt_points_checksum_ok(const uint8_t *data) {
+    uint8_t sum=0;
+    for (unsigned i=0;i<NVT_POINT_DATA_LEN-1;++i) sum=(uint8_t)(sum+data[i]);
+    return (uint8_t)(~sum+1)==data[NVT_POINT_DATA_LEN-1];
+}
+int nvt_points_recovery(const uint8_t *data) {
+    // nvt_fw_recovery: six 0x77 bytes are the firmware's ESD handshake; nvt_wdt_fw_recovery: six bytes of 0xfd/0xfe follow a
+    // watchdog reset (the stock driver downloads the firmware again after ten such reports in a row).
+    unsigned handshake=1,wdt=1;
+    for (unsigned i=0;i<6;++i) {
+        if (data[i]!=0x77) handshake=0;
+        if (data[i]!=0xfd && data[i]!=0xfe) wdt=0;
+    }
+    return handshake?1:wdt?2:0;
+}
+unsigned nvt_parse_points(const uint8_t *data, const struct nvt_fw_info *info, struct nvt_point *out, unsigned max) {
+    unsigned n=0;
+    for (unsigned i=0;i<NVT_POINT_SLOTS && n<max;++i) {
+        const uint8_t *s=data+6*i;
+        unsigned id=s[0]>>3,state=s[0]&7;
+        if (!id || id>NVT_POINT_SLOTS || (state!=1 && state!=2)) continue;
+        unsigned x=((unsigned)s[1]<<4)|(s[3]>>4),y=((unsigned)s[2]<<4)|(s[3]&15);
+        if ((info->abs_x_max && x>info->abs_x_max) || (info->abs_y_max && y>info->abs_y_max)) continue;
+        unsigned p=s[5];
+        if (i<2) p|=(unsigned)data[62+i]<<8;
+        out[n++]=(struct nvt_point){(uint8_t)id,(uint8_t)state,(uint16_t)x,(uint16_t)y,s[4]?s[4]:1,(uint16_t)(p?p:1)};
+    }
+    return n;
+}
+int nvt_wait_reset_state(struct nvt_chip *c, uint8_t state, unsigned polls) {
+    for (unsigned retry=0;retry<=polls;++retry) {
+        uint8_t b[5]={0};int r=nvt_read(c,c->map->event_buf+EVENT_RESET_COMPLETE,b,5);if (r) return r;
+        memcpy(c->dl_reset_state,b,5);c->dl_polls=retry+1;
+        if (b[0]>=state && b[0]<=RESET_STATE_MAX) return 0;
+        delay(c,10);
+    }
+    return NVT_ERR_TIMEOUT;
+}
+int nvt_start_reports(struct nvt_chip *c, struct nvt_fw_info *info) {
+    // The stock nvt_check_fw_reset_state(RESET_STATE_REK) allows 50 polls of 10 ms after a download.
+    int state=nvt_wait_reset_state(c,NVT_RESET_STATE_REK,50);
+    if (state==NVT_ERR_BUS) return state;
+    int r=nvt_get_fw_info(c,info);
+    if (r) return r;
+    return state;
+}
