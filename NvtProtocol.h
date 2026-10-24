@@ -126,12 +126,17 @@ unsigned nvt_peek_counter(const uint8_t *hdr);
 unsigned nvt_peek_type(const uint8_t *hdr);
 
 // Point reports: firmware that reports fingers itself instead of THP frames (the NT36532 of the Xiaomi Pad 6, pipa). Facts from
-// that tablet's stock kernel (nvt_ts_work_func, nvt_ts_point_data_checksum): 65 bytes from the event buffer's offset 0, ten slots
-// of six bytes, the pressure high bytes of the first two slots at 62/63 and in byte 64 the two's complement of the sum of bytes
-// 0..63. A slot: id in bits 7:3 of byte 0 (1..10, 0 = empty) and the state in bits 2:0 (1 down, 2 moving); x = b1<<4 | b3>>4,
-// y = b2<<4 | (b3 & 15) in the firmware's coordinate range (nvt_fw_info abs_x_max/abs_y_max); b4 the width, b5 the pressure.
-// Byte 0 = 0xfd/0xfe/... marks a firmware reset or watchdog recovery instead of points (nvt_wdt_fw_recovery).
-#define NVT_POINT_DATA_LEN 65
+// that tablet's stock kernel (nvt_ts_work_func, nvt_ts_point_data_checksum): 108 bytes from the event buffer's offset 0 (its SPI
+// read of 0x6d bytes with the address byte first), ten slots of six bytes, in byte 64 the two's complement of the sum of bytes
+// 0..63, the pen report from byte 65 and the pressures of the ten slots at 98..107. A slot: id in bits 7:3 of byte 0 (1..10, 0 =
+// empty) and the state in bits 2:0 (1 down, 2 moving); x = b1<<8 | b2 and y = b3<<8 | b4, big endian, below the firmware's range
+// (nvt_fw_info abs_x_max/abs_y_max: 18000 x 28800 on pipa, ten units a pixel); b5 the touch width. A slot outside the range is
+// skipped as the stock driver does. Byte 0 = 0xfd/0xfe/... marks a firmware reset or watchdog recovery instead of points
+// (nvt_wdt_fw_recovery). (The 12-bit slot layout x = b1<<4 | b3>>4 of other Novatek firmware is not this one's: on the tablet its
+// info block reported the range 18000 x 28800, 2026-10-24.)
+#define NVT_POINT_DATA_LEN 108
+#define NVT_POINT_CHECKSUM_LEN 65
+#define NVT_POINT_PRESSURE 98
 #define NVT_POINT_SLOTS 10
 #define NVT_RESET_STATE_REK 0xa1
 struct nvt_point {uint8_t id, state; uint16_t x, y; uint8_t width; uint16_t pressure;};

@@ -27,32 +27,37 @@ static void delay_ms(void *ctx, unsigned ms) {(void)ctx; (void)ms;}
 
 static void seal(uint8_t *d) {
     uint8_t sum = 0;
-    for (unsigned i = 0; i < NVT_POINT_DATA_LEN - 1; ++i) sum = (uint8_t)(sum + d[i]);
-    d[NVT_POINT_DATA_LEN - 1] = (uint8_t)(~sum + 1);
+    for (unsigned i = 0; i < NVT_POINT_CHECKSUM_LEN - 1; ++i) sum = (uint8_t)(sum + d[i]);
+    d[NVT_POINT_CHECKSUM_LEN - 1] = (uint8_t)(~sum + 1);
 }
+// A slot as the stock nvt_ts_work_func reads it: big-endian x and y, the width in byte 5, the pressure at 98 + slot.
 static void slot(uint8_t *d, unsigned i, unsigned id, unsigned state, unsigned x, unsigned y, unsigned w, unsigned p) {
     uint8_t *s = d + 6 * i;
-    s[0] = (uint8_t)(id << 3 | state); s[1] = (uint8_t)(x >> 4); s[2] = (uint8_t)(y >> 4);
-    s[3] = (uint8_t)((x & 15) << 4 | (y & 15)); s[4] = (uint8_t)w; s[5] = (uint8_t)p;
+    s[0] = (uint8_t)(id << 3 | state); s[1] = (uint8_t)(x >> 8); s[2] = (uint8_t)x;
+    s[3] = (uint8_t)(y >> 8); s[4] = (uint8_t)y; s[5] = (uint8_t)w; d[NVT_POINT_PRESSURE + i] = (uint8_t)p;
 }
 static uint32_t le32(const uint8_t *p) {return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24;}
 
 int main(int argc, char **argv) {
-    struct nvt_fw_info info = {.abs_x_max = 1800, .abs_y_max = 2880};
+    // The range pipa's firmware reported on the tablet (2026-10-24).
+    struct nvt_fw_info info = {.abs_x_max = 18000, .abs_y_max = 28800};
     uint8_t d[NVT_POINT_DATA_LEN] = {0};
-    // Two fingers: slot 0 id 1 down at (1234, 2345), slot 3 id 4 moving at (17, 2880) with a pressure high byte only for slots 0/1.
-    slot(d, 0, 1, 1, 1234, 2345, 9, 0x40); d[62] = 0x01;
-    slot(d, 3, 4, 2, 17, 2880, 0, 0);
+    // Two fingers: slot 0 id 1 down at (12345, 23456), slot 3 id 4 moving at (17, 28799) without width or pressure.
+    slot(d, 0, 1, 1, 12345, 23456, 9, 0x40);
+    slot(d, 3, 4, 2, 17, 28799, 0, 0);
     slot(d, 5, 6, 3, 100, 100, 1, 1);          // state 3 (lifted): skipped
-    slot(d, 6, 7, 1, 1801, 10, 1, 1);          // beyond the range: skipped
+    slot(d, 6, 7, 1, 18000, 10, 1, 1);         // at the range's end: skipped, as the stock driver does
     seal(d);
     assert(nvt_points_checksum_ok(d));
     struct nvt_point p[NVT_POINT_SLOTS];
     unsigned n = nvt_parse_points(d, &info, p, NVT_POINT_SLOTS);
     assert(n == 2);
-    assert(p[0].id == 1 && p[0].state == 1 && p[0].x == 1234 && p[0].y == 2345 && p[0].width == 9 && p[0].pressure == 0x140);
-    assert(p[1].id == 4 && p[1].state == 2 && p[1].x == 17 && p[1].y == 2880 && p[1].width == 1 && p[1].pressure == 1);
+    assert(p[0].id == 1 && p[0].state == 1 && p[0].x == 12345 && p[0].y == 23456 && p[0].width == 9 && p[0].pressure == 0x40);
+    assert(p[1].id == 4 && p[1].state == 2 && p[1].x == 17 && p[1].y == 28799 && p[1].width == 1 && p[1].pressure == 1);
     assert(nvt_parse_points(d, &info, p, 1) == 1);
+    // The pressures are outside the checksum.
+    d[NVT_POINT_PRESSURE] ^= 1;
+    assert(nvt_points_checksum_ok(d));
     d[10] ^= 1;
     assert(!nvt_points_checksum_ok(d));
     assert(!nvt_points_recovery(d));
@@ -68,18 +73,19 @@ int main(int argc, char **argv) {
     struct nvt_chip chip = {.bus = &bus, .scratch = scratch, .rxbuf = rxbuf, .map = &map};
     uint8_t *fwinfo = mem + 0x125800 + NVT_EVENT_FWINFO;
     fwinfo[0] = 0x19; fwinfo[1] = 0xe6; fwinfo[2] = 38; fwinfo[3] = 60;
-    fwinfo[4] = 1800 >> 8; fwinfo[5] = 1800 & 255; fwinfo[6] = 2880 >> 8; fwinfo[7] = 2880 & 255;
+    fwinfo[4] = 18000 >> 8; fwinfo[5] = 18000 & 255; fwinfo[6] = 28800 >> 8; fwinfo[7] = 28800 & 255;
     struct nvt_fw_info got;
     assert(!nvt_start_reports(&chip, &got));
     assert(reads_of_state == 3 && got.fw_ver == 0x19 && got.x_num == 38 && got.y_num == 60);
-    assert(got.abs_x_max == 1800 && got.abs_y_max == 2880);
-    // Points as the stock driver reads them: offset 0 of the event buffer.
-    slot(mem + 0x125800, 2, 3, 1, 900, 1440, 5, 7); seal(mem + 0x125800);
+    assert(got.abs_x_max == 18000 && got.abs_y_max == 28800);
+    // Points as the stock driver reads them: 108 bytes from offset 0 of the event buffer.
+    slot(mem + 0x125800, 2, 3, 1, 9000, 14400, 5, 7); seal(mem + 0x125800);
     assert(!nvt_read_points(&chip, d) && nvt_points_checksum_ok(d));
-    assert(nvt_parse_points(d, &got, p, NVT_POINT_SLOTS) == 1 && p[0].id == 3 && p[0].x == 900 && p[0].y == 1440);
+    assert(nvt_parse_points(d, &got, p, NVT_POINT_SLOTS) == 1 && p[0].id == 3 && p[0].x == 9000 && p[0].y == 14400);
+    assert(p[0].width == 5 && p[0].pressure == 7);
     // A state that never comes: a timeout, with the info still read.
     memset(mem + 0x125800 + 0x60, 0, 5); reads_of_state = 100;
-    assert(nvt_start_reports(&chip, &got) == NVT_ERR_TIMEOUT && got.abs_x_max == 1800);
+    assert(nvt_start_reports(&chip, &got) == NVT_ERR_TIMEOUT && got.abs_x_max == 18000);
 
     const char *path = argc > 1 ? argv[1] : getenv("NVT_FIRMWARE");
     if (!path || !*path) {puts("PASS: point reports (checksum, slots, recovery, start of reporting on a model); no firmware given"); return 0;}

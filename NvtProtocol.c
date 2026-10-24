@@ -371,8 +371,8 @@ int nvt_read_points(struct nvt_chip *c, uint8_t *data) {
 }
 int nvt_points_checksum_ok(const uint8_t *data) {
     uint8_t sum=0;
-    for (unsigned i=0;i<NVT_POINT_DATA_LEN-1;++i) sum=(uint8_t)(sum+data[i]);
-    return (uint8_t)(~sum+1)==data[NVT_POINT_DATA_LEN-1];
+    for (unsigned i=0;i<NVT_POINT_CHECKSUM_LEN-1;++i) sum=(uint8_t)(sum+data[i]);
+    return (uint8_t)(~sum+1)==data[NVT_POINT_CHECKSUM_LEN-1];
 }
 int nvt_points_recovery(const uint8_t *data) {
     // nvt_fw_recovery: six 0x77 bytes are the firmware's ESD handshake; nvt_wdt_fw_recovery: six bytes of 0xfd/0xfe follow a
@@ -390,11 +390,10 @@ unsigned nvt_parse_points(const uint8_t *data, const struct nvt_fw_info *info, s
         const uint8_t *s=data+6*i;
         unsigned id=s[0]>>3,state=s[0]&7;
         if (!id || id>NVT_POINT_SLOTS || (state!=1 && state!=2)) continue;
-        unsigned x=((unsigned)s[1]<<4)|(s[3]>>4),y=((unsigned)s[2]<<4)|(s[3]&15);
-        if ((info->abs_x_max && x>info->abs_x_max) || (info->abs_y_max && y>info->abs_y_max)) continue;
-        unsigned p=s[5];
-        if (i<2) p|=(unsigned)data[62+i]<<8;
-        out[n++]=(struct nvt_point){(uint8_t)id,(uint8_t)state,(uint16_t)x,(uint16_t)y,s[4]?s[4]:1,(uint16_t)(p?p:1)};
+        unsigned x=((unsigned)s[1]<<8)|s[2],y=((unsigned)s[3]<<8)|s[4];
+        if ((info->abs_x_max && x>=info->abs_x_max) || (info->abs_y_max && y>=info->abs_y_max)) continue;
+        unsigned p=data[NVT_POINT_PRESSURE+i];
+        out[n++]=(struct nvt_point){(uint8_t)id,(uint8_t)state,(uint16_t)x,(uint16_t)y,s[5]?s[5]:1,(uint16_t)(p?p:1)};
     }
     return n;
 }
